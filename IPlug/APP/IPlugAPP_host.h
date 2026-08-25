@@ -100,6 +100,8 @@ public:
     uint32_t mAudioInChanR;
     uint32_t mAudioOutChanL;
     uint32_t mAudioOutChanR;
+    /** When false, audio input is not opened (avoids feedback with speakers). */
+    bool mAudioInputEnabled = false;
     
     AppState()
     : mAudioInDev(DEFAULT_INPUT_DEV)
@@ -134,6 +136,7 @@ public:
     , mAudioInChanR(obj.mAudioInChanR)
     , mAudioOutChanL(obj.mAudioOutChanL)
     , mAudioOutChanR(obj.mAudioOutChanR)
+    , mAudioInputEnabled(obj.mAudioInputEnabled)
     {
     }
     
@@ -150,7 +153,8 @@ public:
               rhs.mAudioInChanL == mAudioInChanL &&
               rhs.mAudioInChanR == mAudioInChanR &&
               rhs.mAudioOutChanL == mAudioOutChanL &&
-              rhs.mAudioOutChanR == mAudioOutChanR
+              rhs.mAudioOutChanR == mAudioOutChanR &&
+              rhs.mAudioInputEnabled == mAudioInputEnabled
       );
     }
     bool operator!=(const AppState& rhs) const { return !operator==(rhs); }
@@ -223,6 +227,23 @@ public:
   bool TryToChangeAudioDriverType();
   bool TryToChangeAudio();
   bool SelectMIDIDevice(ERoute direction, const char* portName);
+
+  bool IsAudioInputEnabled() const { return mState.mAudioInputEnabled; }
+  bool SetAudioInputEnabled(bool enable);
+  int GetAudioInputDeviceCount() const { return static_cast<int>(mAudioInputDevIDs.size()); }
+  std::string GetAudioInputDeviceNameByIndex(int index) const;
+  int GetSelectedAudioInputDeviceIndex() const;
+  bool SetAudioInputDeviceByIndex(int index);
+
+  /** Optional app-level input (e.g. WAV file). Fills one sample per channel at bufferIndex in silence buffers. */
+  using CustomInputFillFunc = bool (*)(void* pUserData, double* const* perChannelBuffers, int nChans, int bufferIndex);
+  void SetCustomInputFill(CustomInputFillFunc fn, void* pUserData = nullptr);
+  /** Arms or disarms custom input; (re)opens the RtAudio stream as needed. Returns false if audio could not start. */
+  bool SetCustomInputActive(bool active);
+  bool IsCustomInputActive() const { return mCustomInputActive; }
+  double GetSampleRate() const { return mSampleRate; }
+  /** Sample rate from preferences / INI (valid before the RtAudio stream is running). */
+  uint32_t GetAudioSampleRateFromSettings() const { return mState.mAudioSR; }
   
   static int AudioCallback(void* pOutputBuffer, void* pInputBuffer, uint32_t nFrames, double streamTime, RtAudioStreamStatus status, void* pUserData);
   static void MIDICallback(double deltatime, std::vector<uint8_t>* pMsg, void* pUserData);
@@ -251,10 +272,15 @@ private:
   uint32_t mVecWait = 0;
   uint32_t mBufferSize = 512;
   uint32_t mBufIndex = 0; // index for signal vector, loops from 0 to mSigVS
+  /** For custom/file input: sequential column index while filling mSilenceInput before AppProcess (must reach APP_SIGNAL_VECTOR_SIZE). */
+  uint32_t mCustomVecFillIdx = 0;
   bool mExiting = false;
   bool mAudioEnding = false;
   bool mAudioDone = false;
   bool mNoIO = false;
+  CustomInputFillFunc mCustomInputFill = nullptr;
+  void* mCustomInputUserData = nullptr;
+  bool mCustomInputActive = false;
 
   /** The ID of the operating system's default input device if detected */
   std::optional<uint32_t> mDefaultInputDev;
@@ -271,6 +297,7 @@ private:
   
   WDL_PtrList<double> mInputBufPtrs;
   WDL_PtrList<double> mOutputBufPtrs;
+  double mSilenceInput[8][APP_SIGNAL_VECTOR_SIZE] = {};
   
   friend class IPlugAPP;
 };

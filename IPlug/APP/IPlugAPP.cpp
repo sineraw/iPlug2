@@ -128,7 +128,12 @@ void IPlugAPP::AppProcess(double** inputs, double** outputs, int nFrames)
 {
   SetChannelConnections(ERoute::kInput, 0, MaxNChannels(ERoute::kInput), !IsInstrument()); //TODO: go elsewhere - enable inputs
   SetChannelConnections(ERoute::kOutput, 0, MaxNChannels(ERoute::kOutput), true); //TODO: go elsewhere
-  AttachBuffers(ERoute::kInput, 0, NChannelsConnected(ERoute::kInput), inputs, GetBlockSize());
+  // Effects must attach every declared input channel: NChannelsConnected() can report 0 on standalone Windows
+  // while RtAudio/custom-fill still delivers stereo pointers — skipping AttachBuffers leaves scratch silence.
+  const int nInAttach = (!IsInstrument() && MaxNChannels(ERoute::kInput) > 0)
+    ? MaxNChannels(ERoute::kInput)
+    : NChannelsConnected(ERoute::kInput);
+  AttachBuffers(ERoute::kInput, 0, nInAttach, inputs, GetBlockSize());
   AttachBuffers(ERoute::kOutput, 0, NChannelsConnected(ERoute::kOutput), outputs, GetBlockSize());
   
   if (mMidiMsgsFromCallback.ElementsAvailable())
