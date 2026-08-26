@@ -919,7 +919,12 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeSt
 {
   int flag = 0;
   int code = MacKeyEventToVK(pEvent, flag);
-  NSString *s = [pEvent charactersIgnoringModifiers];
+  // Use the actual typed character so Option/Shift match the keyboard layout
+  // (e.g. Italian Option+ò → @). charactersIgnoringModifiers strips Option
+  // and can drop Shift, which made @ become ò and blocked capitals.
+  NSString *s = [pEvent characters];
+  if (!s || [s length] == 0)
+    s = [pEvent charactersIgnoringModifiers];
 
   unichar c = 0;
   
@@ -950,7 +955,9 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeSt
 {
   int flag = 0;
   int code = MacKeyEventToVK(pEvent, flag);
-  NSString *s = [pEvent charactersIgnoringModifiers];
+  NSString *s = [pEvent characters];
+  if (!s || [s length] == 0)
+    s = [pEvent charactersIgnoringModifiers];
   
   unichar c = 0;
   

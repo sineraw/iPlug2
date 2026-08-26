@@ -495,9 +495,16 @@ bool IPlugAPPHost::SetAudioInputEnabled(bool enable)
   if (mState.mAudioInputEnabled == enable)
     return true;
 
+  const bool previous = mState.mAudioInputEnabled;
   mState.mAudioInputEnabled = enable;
   UpdateINI();
-  return TryToChangeAudio();
+  if (TryToChangeAudio())
+    return true;
+
+  mState.mAudioInputEnabled = previous;
+  UpdateINI();
+  TryToChangeAudio();
+  return false;
 }
 
 std::string IPlugAPPHost::GetAudioInputDeviceNameByIndex(int index) const
@@ -585,7 +592,12 @@ bool IPlugAPPHost::SetAudioInputDeviceByIndex(int index)
 
   mState.mAudioInDev.Set(GetAudioDeviceName(mAudioInputDevIDs[static_cast<size_t>(index)]).c_str());
   const int nChannels = GetSelectedAudioInputChannelCount();
-  if (mState.mAudioInChanL < 1 || mState.mAudioInChanR != mState.mAudioInChanL + 1 ||
+  if (nChannels < 2)
+  {
+    mState.mAudioInChanL = 1;
+    mState.mAudioInChanR = 1;
+  }
+  else if (mState.mAudioInChanL < 1 || mState.mAudioInChanR != mState.mAudioInChanL + 1 ||
       static_cast<int>(mState.mAudioInChanR) > nChannels)
   {
     mState.mAudioInChanL = 1;
@@ -705,6 +717,7 @@ void IPlugAPPHost::CloseAudio()
     
     mDAC->closeStream();
   }
+  mStreamInputChannels = 0;
 }
 
 bool IPlugAPPHost::InitAudio(uint32_t inID, uint32_t outID, uint32_t sr, uint32_t iovs)
@@ -720,23 +733,25 @@ bool IPlugAPPHost::InitAudio(uint32_t inID, uint32_t outID, uint32_t sr, uint32_
   // is injected in AudioCallback via mCustomInputFill into silence buffers — opening input channels
   // on the output device ID fails on many Windows setups.
   const bool wantHardwareInputChannels = mState.mAudioInputEnabled;
-  const int nInputChansHw = GetPlug()->MaxNChannels(ERoute::kInput);
+  const int nInputChansPlug = GetPlug()->MaxNChannels(ERoute::kInput);
+  int streamInputChannels = 0;
   int firstInputChannel = std::max(0, static_cast<int>(mState.mAudioInChanL) - 1);
   if (wantHardwareInputChannels)
   {
     const int availableInputChannels = static_cast<int>(mDAC->getDeviceInfo(inID).inputChannels);
-    if (firstInputChannel + nInputChansHw > availableInputChannels)
+    streamInputChannels = std::min(nInputChansPlug, std::max(0, availableInputChannels));
+    if (streamInputChannels > 0 && firstInputChannel + streamInputChannels > availableInputChannels)
     {
-      firstInputChannel = 0;
-      mState.mAudioInChanL = 1;
-      mState.mAudioInChanR = 2;
+      firstInputChannel = std::max(0, availableInputChannels - streamInputChannels);
+      mState.mAudioInChanL = static_cast<uint32_t>(firstInputChannel + 1);
+      mState.mAudioInChanR = static_cast<uint32_t>(firstInputChannel + streamInputChannels);
       UpdateINI();
     }
   }
 
   RtAudio::StreamParameters iParams {};
   iParams.deviceId = inID;
-  iParams.nChannels = wantHardwareInputChannels ? nInputChansHw : 0;
+  iParams.nChannels = static_cast<unsigned int>(streamInputChannels);
   iParams.firstChannel = wantHardwareInputChannels
     ? static_cast<unsigned int>(firstInputChannel)
     : 0;
@@ -780,9 +795,12 @@ bool IPlugAPPHost::InitAudio(uint32_t inID, uint32_t outID, uint32_t sr, uint32_
       DBGMSG("RtAudio output-only failed (%s); retrying with default capture device.\n", mDAC->getErrorText().c_str());
       RtAudio::StreamParameters iDuplex {};
       iDuplex.deviceId = mDefaultInputDev.value();
-      iDuplex.nChannels = nInputChansHw;
+      iDuplex.nChannels = static_cast<unsigned int>(std::min(nInputChansPlug,
+        static_cast<int>(mDAC->getDeviceInfo(mDefaultInputDev.value()).inputChannels)));
       iDuplex.firstChannel = 0;
       status = openStreamWithInput(&iDuplex);
+      if (status == RtAudioErrorType::RTAUDIO_NO_ERROR)
+        streamInputChannels = static_cast<int>(iDuplex.nChannels);
     }
   }
 
@@ -811,6 +829,7 @@ bool IPlugAPPHost::InitAudio(uint32_t inID, uint32_t outID, uint32_t sr, uint32_
   }
 
   mActiveState = mState;
+  mStreamInputChannels = streamInputChannels;
 
   return true;
 }
@@ -875,6 +894,7 @@ int IPlugAPPHost::AudioCallback(void* pOutputBuffer, void* pInputBuffer, uint32_
 
   int nins = _this->GetPlug()->MaxNChannels(ERoute::kInput);
   int nouts = _this->GetPlug()->MaxNChannels(ERoute::kOutput);
+  const int streamIns = std::max(0, _this->mStreamInputChannels);
   
   double* pInputBufferD = static_cast<double*>(pInputBuffer);
   double* pOutputBufferD = static_cast<double*>(pOutputBuffer);
@@ -887,8 +907,8 @@ int IPlugAPPHost::AudioCallback(void* pOutputBuffer, void* pInputBuffer, uint32_
 
   if (startWait && !_this->mAudioDone)
   {
-    if (doFade && pInputBufferD && !useCustomInput)
-      ApplyFades(pInputBufferD, nins, nFrames, _this->mAudioEnding);
+    if (doFade && pInputBufferD && !useCustomInput && streamIns > 0)
+      ApplyFades(pInputBufferD, streamIns, nFrames, _this->mAudioEnding);
     
     for (int i = 0; i < int(nFrames); i++)
     {
@@ -926,10 +946,10 @@ int IPlugAPPHost::AudioCallback(void* pOutputBuffer, void* pInputBuffer, uint32_
         {
           for (int c = 0; c < nins; c++)
           {
-            if (useSilenceInput)
+            if (useSilenceInput || streamIns <= 0)
               _this->mInputBufPtrs.Set(c, _this->mSilenceInput[c]);
             else
-              _this->mInputBufPtrs.Set(c, (pInputBufferD + (c * nFrames)) + i);
+              _this->mInputBufPtrs.Set(c, (pInputBufferD + (std::min(c, streamIns - 1) * nFrames)) + i);
           }
         
           for (int c = 0; c < nouts; c++)

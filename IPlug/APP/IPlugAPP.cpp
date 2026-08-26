@@ -11,8 +11,13 @@
 #include "IPlugAPP.h"
 #include "IPlugAPP_host.h"
 
+#include <algorithm>
+
 #if defined OS_MAC || defined OS_LINUX
 #include <IPlugSWELL.h>
+#ifdef OS_MAC
+#import <Cocoa/Cocoa.h>
+#endif
 #else
 extern float GetScaleForHWND(HWND hWnd);
 #endif
@@ -61,7 +66,16 @@ bool IPlugAPP::EditorResize(int viewWidth, int viewHeight)
     #else
     float ss = 1.f;
     #endif
-    
+
+#if defined OS_MAC && defined PLUG_LOCK_ASPECT_RATIO && PLUG_LOCK_ASPECT_RATIO
+    if (gHWND)
+    {
+      NSView* view = (__bridge NSView*) (void*) gHWND;
+      if (NSWindow* window = [view window])
+        [window setContentAspectRatio:NSMakeSize(std::max(1, viewWidth), std::max(1, viewHeight))];
+    }
+#endif
+
     SetWindowPos(gHWND, 0,
                  static_cast<LONG>(rcWindow.left * ss),
                  static_cast<LONG>((rcWindow.bottom - viewHeight - ptDiff.y) * ss),

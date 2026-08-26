@@ -284,6 +284,8 @@ private:
   CustomInputFillFunc mCustomInputFill = nullptr;
   void* mCustomInputUserData = nullptr;
   bool mCustomInputActive = false;
+  /** Input channels actually opened on the current RtAudio stream (may be < plugin inputs). */
+  int mStreamInputChannels = 0;
 
   /** The ID of the operating system's default input device if detected */
   std::optional<uint32_t> mDefaultInputDev;

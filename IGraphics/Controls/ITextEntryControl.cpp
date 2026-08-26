@@ -318,6 +318,15 @@ bool ITextEntryControl::OnKeyDown(float x, float y, const IKeyPress& key)
     stbKey |= STB_TEXTEDIT_K_ALT;
   if (key.S)
     stbKey |= STB_TEXTEDIT_K_SHIFT;
+
+  // Shift must affect the inserted glyph. Platform code may report the
+  // unshifted letter in utf8 while still setting key.S.
+  if (!(stbKey & VIRTUAL_KEY_BIT) && (stbKey & STB_TEXTEDIT_K_SHIFT))
+  {
+    const int ch = stbKey & ~0xF0000000;
+    if (ch >= 'a' && ch <= 'z')
+      stbKey = (stbKey & 0xF0000000) | (ch - 'a' + 'A');
+  }
   
   return CallSTB([&]() { stb_textedit_key(this, &mEditState, stbKey); }) ? true : false;
 }
@@ -521,8 +530,9 @@ void ITextEntryControl::CreateTextEntry(int paramIdx, const IText& text, const I
   SetText(text);
   mText.mFGColor = mText.mTextEntryFGColor;
   SetStr(str);
-  SelectAll();
   mEditState.cursor = 0;
+  mEditState.select_start = 0;
+  mEditState.select_end = 0;
   OnTextChange();
   SetDirty(true);
   mEditing = true;

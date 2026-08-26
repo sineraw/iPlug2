@@ -12,6 +12,7 @@
 #include "config.h"
 #include "resource.h"
 
+#include <algorithm>
 #include <ctime>
 
 #ifdef OS_WIN
@@ -21,6 +22,7 @@ extern float GetScaleForHWND(HWND hWnd);
 #define GET_MENU() GetMenu(gHWND)
 extern bool SaveWindowScreenshot(HWND hwnd, const char* path);
 #elif defined OS_MAC
+#import <Cocoa/Cocoa.h>
 #define GET_MENU() SWELL_GetCurrentMenu()
 extern "C" bool SaveWindowScreenshot(void* hwnd, const char* path);
 #endif
@@ -34,6 +36,22 @@ using namespace igraphics;
 
 #define IDT_SCREENSHOT_TIMER 1001
 
+#if defined OS_MAC && defined PLUG_LOCK_ASPECT_RATIO && PLUG_LOCK_ASPECT_RATIO
+static void ApplyHostWindowAspectRatio(HWND hwnd, IPlugAPP* pPlug)
+{
+  if (!hwnd || !pPlug || !pPlug->GetHostResizeEnabled())
+    return;
+
+  NSView* view = (__bridge NSView*) (void*) hwnd;
+  NSWindow* window = [view window];
+  if (!window)
+    return;
+
+  const CGFloat width = static_cast<CGFloat>(std::max(1, pPlug->GetEditorWidth()));
+  const CGFloat height = static_cast<CGFloat>(std::max(1, pPlug->GetEditorHeight()));
+  [window setContentAspectRatio:NSMakeSize(width, height)];
+}
+#endif
 
 // check the input and output devices, find matching srs
 void IPlugAPPHost::PopulateSampleRateList(HWND hwndDlg, RtAudio::DeviceInfo* inputDevInfo, RtAudio::DeviceInfo* outputDevInfo)
@@ -562,8 +580,12 @@ WDL_DLGRET IPlugAPPHost::MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPA
       }
 
       ClientResize(hwndDlg, pPlug->GetEditorWidth(), pPlug->GetEditorHeight());
-
       ShowWindow(hwndDlg, SW_SHOW);
+#if defined OS_MAC && defined PLUG_LOCK_ASPECT_RATIO && PLUG_LOCK_ASPECT_RATIO
+      // The content view must already be attached and visible. Applying this before
+      // ShowWindow can make SWELL create an empty native window.
+      ApplyHostWindowAspectRatio(hwndDlg, pPlug);
+#endif
 
       // If in screenshot mode, start timer to take screenshot after UI initializes
       if (pAppHost->IsScreenshotMode())

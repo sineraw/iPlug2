@@ -174,6 +174,11 @@ bool GetResourcePathFromBundle(const char* fileName, const char* searchExt, WDL_
     else
     {
       pBundle = [NSBundle bundleWithIdentifier:[NSString stringWithUTF8String:bundleID]];
+#ifdef APP_API
+      // Standalone app: if BUNDLE_ID does not match Info.plist, still load from this .app.
+      if (!pBundle)
+        pBundle = [NSBundle mainBundle];
+#endif
     }
 
     NSString* pFile = [[NSString stringWithUTF8String:fileName] stringByDeletingPathExtension];
