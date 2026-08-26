@@ -234,6 +234,9 @@ public:
   std::string GetAudioInputDeviceNameByIndex(int index) const;
   int GetSelectedAudioInputDeviceIndex() const;
   bool SetAudioInputDeviceByIndex(int index);
+  int GetSelectedAudioInputChannelCount() const;
+  int GetAudioInputPairFirstChannel() const { return static_cast<int>(mState.mAudioInChanL); }
+  bool SetAudioInputChannelPair(int firstChannel);
 
   /** Optional app-level input (e.g. WAV file). Fills one sample per channel at bufferIndex in silence buffers. */
   using CustomInputFillFunc = bool (*)(void* pUserData, double* const* perChannelBuffers, int nChans, int bufferIndex);

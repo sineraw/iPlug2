@@ -361,7 +361,7 @@ void IPopupMenuControl::DrawCellText(IGraphics& g, const IRECT& bounds, const IP
       mText.mFGColor = mDisabledItemColor;
   }
   
-  mText.mAlign = EAlign::Near;
+  mText.mAlign = mItemTextAlignment;
   g.DrawText(mText, pItem->GetText(), textRect, pBlend);
 }
 
@@ -474,6 +474,8 @@ IRECT IPopupMenuControl::GetLargestCellRectForMenu(IPopupMenu& menu, float x, fl
   
   span.HPad(TEXT_HPAD); // add some padding because we don't want to be flush to the edges
   span.Pad(TICK_SIZE, 0, ARROW_SIZE, 0);
+  if (span.W() < mMinimumCellWidth)
+    span.R = span.L + mMinimumCellWidth;
   
   return IRECT(x, y, x + span.W(), y + span.H());
 }
@@ -688,7 +690,7 @@ void IPopupMenuControl::Expand(const IRECT& anchorArea)
   {
     if ( (y <= minT || x <= minL || x > maxR) && anchorArea.MH() <= mMaxBounds.MH() )
     {
-      x = anchorArea.MW() - (panelWidth / 2.f);
+      x = anchorArea.MW() - (panelWidth / 2.f) - PAD;
       y = anchorArea.B + calloutSpace;
       mCalloutArrowBounds = IRECT(anchorArea.MW() - (calloutSpace/2.f), anchorArea.B, anchorArea.MW() + (calloutSpace/2.f), anchorArea.B + calloutSpace);
       mCalloutArrowDir = kSouth;
@@ -713,7 +715,7 @@ void IPopupMenuControl::Expand(const IRECT& anchorArea)
     
     if ( (y > maxB || x <= minL || x > maxR) && anchorArea.MH() > mMaxBounds.MH() )
     {
-      x = anchorArea.MW() - (panelWidth / 2.f);
+      x = anchorArea.MW() - (panelWidth / 2.f) - PAD;
       y = anchorArea.T - calloutSpace - panelHeight - mDropShadowSize;
       mCalloutArrowBounds = IRECT(anchorArea.MW() - (calloutSpace/2.f), anchorArea.T - calloutSpace, anchorArea.MW() + (calloutSpace/2.f), anchorArea.T);
       mCalloutArrowDir = kNorth;
@@ -746,7 +748,7 @@ void IPopupMenuControl::Expand(const IRECT& anchorArea)
   {
     if (anchorArea.B + calloutSpace <= maxB)
     {
-      x = anchorArea.MW() - (panelWidth / 2.f);
+      x = anchorArea.MW() - (panelWidth / 2.f) - PAD;
       y = anchorArea.B + calloutSpace;
       mCalloutArrowBounds = IRECT(anchorArea.MW() - (calloutSpace/2.f), anchorArea.B, anchorArea.MW() + (calloutSpace/2.f), anchorArea.B + calloutSpace);
       mCalloutArrowDir = kSouth;
@@ -768,7 +770,7 @@ void IPopupMenuControl::Expand(const IRECT& anchorArea)
       mSubmenuOnRight = false;
       shiftfactor = 1.f;
     }
-    x = (anchorArea.MW() - (panelWidth / 2.f)) + (mMenuShift * shiftfactor);
+    x = (anchorArea.MW() - (panelWidth / 2.f) - PAD) + (mMenuShift * shiftfactor);
     if ( x <= minL ) x = minL;
     if ( x > maxR ) x = maxR;
     

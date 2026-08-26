@@ -523,6 +523,38 @@ int IPlugAPPHost::GetSelectedAudioInputDeviceIndex() const
   return -1;
 }
 
+int IPlugAPPHost::GetSelectedAudioInputChannelCount() const
+{
+  if (!mDAC)
+    return 0;
+
+  const auto id = GetAudioDeviceID(mState.mAudioInDev.Get());
+  if (!id)
+    return 0;
+
+  return static_cast<int>(mDAC->getDeviceInfo(id.value()).inputChannels);
+}
+
+bool IPlugAPPHost::SetAudioInputChannelPair(int firstChannel)
+{
+  const int nChannels = GetSelectedAudioInputChannelCount();
+  if (firstChannel < 1 || (firstChannel % 2) == 0 || firstChannel + 1 > nChannels)
+    return false;
+
+  if (mState.mAudioInChanL == static_cast<uint32_t>(firstChannel) &&
+      mState.mAudioInChanR == static_cast<uint32_t>(firstChannel + 1))
+    return true;
+
+  mState.mAudioInChanL = static_cast<uint32_t>(firstChannel);
+  mState.mAudioInChanR = static_cast<uint32_t>(firstChannel + 1);
+  UpdateINI();
+
+  if (!mState.mAudioInputEnabled)
+    return true;
+
+  return TryToChangeAudio();
+}
+
 void IPlugAPPHost::SetCustomInputFill(CustomInputFillFunc fn, void* pUserData)
 {
   mCustomInputFill = fn;
@@ -552,6 +584,13 @@ bool IPlugAPPHost::SetAudioInputDeviceByIndex(int index)
     return false;
 
   mState.mAudioInDev.Set(GetAudioDeviceName(mAudioInputDevIDs[static_cast<size_t>(index)]).c_str());
+  const int nChannels = GetSelectedAudioInputChannelCount();
+  if (mState.mAudioInChanL < 1 || mState.mAudioInChanR != mState.mAudioInChanL + 1 ||
+      static_cast<int>(mState.mAudioInChanR) > nChannels)
+  {
+    mState.mAudioInChanL = 1;
+    mState.mAudioInChanR = 2;
+  }
   UpdateINI();
 
   if (!mState.mAudioInputEnabled)
@@ -682,11 +721,25 @@ bool IPlugAPPHost::InitAudio(uint32_t inID, uint32_t outID, uint32_t sr, uint32_
   // on the output device ID fails on many Windows setups.
   const bool wantHardwareInputChannels = mState.mAudioInputEnabled;
   const int nInputChansHw = GetPlug()->MaxNChannels(ERoute::kInput);
+  int firstInputChannel = std::max(0, static_cast<int>(mState.mAudioInChanL) - 1);
+  if (wantHardwareInputChannels)
+  {
+    const int availableInputChannels = static_cast<int>(mDAC->getDeviceInfo(inID).inputChannels);
+    if (firstInputChannel + nInputChansHw > availableInputChannels)
+    {
+      firstInputChannel = 0;
+      mState.mAudioInChanL = 1;
+      mState.mAudioInChanR = 2;
+      UpdateINI();
+    }
+  }
 
   RtAudio::StreamParameters iParams {};
   iParams.deviceId = inID;
   iParams.nChannels = wantHardwareInputChannels ? nInputChansHw : 0;
-  iParams.firstChannel = 0;
+  iParams.firstChannel = wantHardwareInputChannels
+    ? static_cast<unsigned int>(firstInputChannel)
+    : 0;
 
   mBufferSize = iovs; // mBufferSize may get changed by stream
 

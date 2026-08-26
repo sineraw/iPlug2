@@ -102,6 +102,12 @@ public:
   void SetPanelColor(IColor color) { mPanelBackgroundColor = color; }
   /** Call this to set the Cell color when mouse is over it */
   void SetCellBackgroundColor(IColor color) { mCellBackGroundColor = color; }
+  /** Set a minimum width for each menu item cell. */
+  void SetMinimumCellWidth(float width) { mMinimumCellWidth = width; }
+  /** Set horizontal alignment for menu item text. */
+  void SetItemTextAlignment(EAlign align) { mItemTextAlignment = align; }
+  /** Set the corner radius of menu panels. */
+  void SetPanelRoundness(float roundness) { mRoundness = roundness; }
   /** Call this to set the mouseover color for text, tick, and arrows on menu panels*/
   void SetItemMouseoverColor(IColor color) { mItemMouseoverColor = color; }
   /** Call this to set the color of enabled text items, ticks and arrows on menu panels*/
@@ -225,6 +231,8 @@ private:
   float mDropShadowSize = 10.f; // The size in pixels of the drop shadow
   float mOpacity = 0.95f; // The opacity of the menu panel backgrounds when fully faded in
   float mMenuShift = 0.f; // The distance in pixels the main menu is shifted to make room for submenus (only if one exist). Set by SetShiftForSubmenus()
+  float mMinimumCellWidth = 0.f;
+  EAlign mItemTextAlignment = EAlign::Near;
 
   const float TEXT_HPAD = 5.; // The amount of horizontal padding on either side of cell text in pixels
   const float TICK_SIZE = 10.; // The size of the area on the left of the cell where a tick mark appears on checked items - actual
