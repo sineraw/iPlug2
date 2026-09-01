@@ -1140,9 +1140,11 @@ static void MakeCursorFromName(NSCursor*& cursor, const char *name)
     [self endUserInput ];
   
   mGraphics->SetPlatformContext(nullptr);
-    
-  //For some APIs (AUv2) this is where we know about the window being closed, close via delegate
-  mGraphics->GetDelegate()->CloseWindow();
+
+  // AUv2 learns the editor is gone here. A second IGraphics (detached video
+  // window) must not close the plugin editor — GetUI() is the primary surface.
+  if (mGraphics->GetDelegate() && mGraphics->GetDelegate()->GetUI() == mGraphics)
+    mGraphics->GetDelegate()->CloseWindow();
   [super removeFromSuperview];
 }
 
