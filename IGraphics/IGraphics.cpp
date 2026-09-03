@@ -372,6 +372,15 @@ void IGraphics::AttachPopupMenuControl(const IText& text, const IRECT& bounds)
   }
 }
 
+void IGraphics::AttachPopupMenuControl(std::unique_ptr<IPopupMenuControl> control)
+{
+  if (!mPopupControl && control)
+  {
+    mPopupControl = std::move(control);
+    mPopupControl->SetDelegate(*GetDelegate());
+  }
+}
+
 void IGraphics::RemovePopupMenuControl()
 {
   mPopupControl = nullptr;

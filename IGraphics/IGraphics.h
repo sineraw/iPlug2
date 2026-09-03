@@ -1339,6 +1339,9 @@ public:
    @param text The text style to use for the menu
    @param bounds The area that the menu should occupy. An empty IRECT will mean the bounds are calculated based on the menu items */
   void AttachPopupMenuControl(const IText& text = DEFAULT_TEXT, const IRECT& bounds = IRECT());
+
+  /** Attach a custom pop-up menu control, to override platform style menus */
+  void AttachPopupMenuControl(std::unique_ptr<IPopupMenuControl> control);
   
   /** Remove the IGraphics popup menu, use platform popup menu if available */
   void RemovePopupMenuControl();
