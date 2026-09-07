@@ -248,6 +248,16 @@ void IParam::Init(const IParam& p, const char* searchStr, const char* replaceStr
 void IParam::SetDisplayText(double value, const char* str)
 {
   int n = mDisplayTexts.GetSize();
+  for (int i = 0; i < n; ++i)
+  {
+    DisplayText* pDT = mDisplayTexts.Get() + i;
+    if (pDT->mValue == value)
+    {
+      strcpy(pDT->mText, str);
+      return;
+    }
+  }
+
   mDisplayTexts.Resize(n + 1);
   DisplayText* pDT = mDisplayTexts.Get() + n;
   pDT->mValue = value;
