@@ -37,7 +37,10 @@ public:
 
     Steinberg::int32 flags = 0;
 
-    if (pParam->GetCanAutomate()) flags |= Steinberg::Vst::ParameterInfo::kCanAutomate;
+    if (pParam->GetCanAutomate())
+      flags |= Steinberg::Vst::ParameterInfo::kCanAutomate;
+    else
+      flags |= Steinberg::Vst::ParameterInfo::kIsHidden;
     if (pParam->Type() == IParam::kTypeEnum) flags |= Steinberg::Vst::ParameterInfo::kIsList;
 
     info.defaultNormalizedValue = valueNormalized = pParam->ToNormalized(pParam->GetDefault());
