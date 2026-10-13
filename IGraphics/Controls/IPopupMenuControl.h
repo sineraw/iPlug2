@@ -104,6 +104,12 @@ public:
   void SetCellBackgroundColor(IColor color) { mCellBackGroundColor = color; }
   /** Set a minimum width for each menu item cell. */
   void SetMinimumCellWidth(float width) { mMinimumCellWidth = width; }
+  /** Set a minimum height for each menu item cell. */
+  void SetMinimumCellHeight(float height) { mMinimumCellHeight = height; }
+  /** When true, cell/panel width matches the CreatePopupMenu anchor (field) width. */
+  void SetMatchAnchorWidth(bool match) { mMatchAnchorWidth = match; }
+  /** Set the gap between adjacent menu item cells. */
+  void SetCellGap(float gap) { mCellGap = gap; }
   /** Set horizontal alignment for menu item text. */
   void SetItemTextAlignment(EAlign align) { mItemTextAlignment = align; }
   /** Set the corner radius of menu panels. */
@@ -116,6 +122,8 @@ public:
   void SetDisabledItemColor(IColor color) { mDisabledItemColor = color; }
   /** Call this to set the Separator color on menu panels */
   void SetSeparatorColor(IColor color) { mSeparatorColor = color; }
+  /** Fully faded-in panel opacity (1 = opaque). Default 0.95 lets underlying UI show through. */
+  void SetOpacity(float opacity) { mOpacity = Clip(opacity, 0.f, 1.f); }
   /** Sets the amount the main menu is shifted to make room for submenus. This helps on small GUI's where submenus will intrude upon the main menu.
    * This does not affect the positioning of menus that do not contain submenus.
    * @param distance The distance in pixels to shift the main menu. Use only positive numbers. It will shift left if the center of the control that
@@ -232,6 +240,8 @@ private:
   float mOpacity = 0.95f; // The opacity of the menu panel backgrounds when fully faded in
   float mMenuShift = 0.f; // The distance in pixels the main menu is shifted to make room for submenus (only if one exist). Set by SetShiftForSubmenus()
   float mMinimumCellWidth = 0.f;
+  float mMinimumCellHeight = 0.f;
+  bool mMatchAnchorWidth = false;
   EAlign mItemTextAlignment = EAlign::Near;
 
   const float TEXT_HPAD = 5.; // The amount of horizontal padding on either side of cell text in pixels

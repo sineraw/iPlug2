@@ -63,6 +63,9 @@ public:
 
   /* Implement this and return true to trigger your custom help info, when someone clicks help in the menu of a standalone app or VST3 plugin */
   virtual bool OnHostRequestingProductHelp() { return false; }
+
+  /* Implement this and return true to open a custom preferences UI instead of the stock standalone Preferences dialog */
+  virtual bool OnHostRequestingPreferences() { return false; }
   
   /** Implement this to do something specific when IPlug becomes aware of the particular host that is hosting the plug-in.
    * The method may get called multiple times. */

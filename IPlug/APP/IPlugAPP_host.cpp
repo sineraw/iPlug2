@@ -15,6 +15,7 @@
 #ifdef OS_WIN
 #include <sys/stat.h>
 #include "win32_utf8.h"
+#include "asio.h"
 #endif
 
 #include "IPlugLogger.h"
@@ -325,6 +326,9 @@ void IPlugAPPHost::ProbeMidiIO()
     return;
   else
   {
+    mMidiInputDevNames.clear();
+    mMidiOutputDevNames.clear();
+
     int nInputPorts = mMidiIn->getPortCount();
 
     mMidiInputDevNames.push_back(OFF_TEXT);
@@ -1023,5 +1027,261 @@ void IPlugAPPHost::MIDICallback(double deltatime, std::vector<uint8_t>* pMsg, vo
 void IPlugAPPHost::ErrorCallback(RtAudioErrorType type, const std::string &errorText)
 {
   std::cerr << "\nerrorCallback: " << errorText << "\n\n";
+}
+
+void IPlugAPPHost::PrefsBeginEdit()
+{
+  mTempState = mState;
+  PrefsRefreshDeviceLists();
+}
+
+void IPlugAPPHost::PrefsCancelEdit()
+{
+  if (!AudioSettingsInStateAreEqual(mState, mTempState)
+      || !MIDISettingsInStateAreEqual(mState, mTempState))
+  {
+    mState = mTempState;
+    TryToChangeAudioDriverType();
+    ProbeAudioIO();
+    ProbeMidiIO();
+    TryToChangeAudio();
+  }
+}
+
+void IPlugAPPHost::PrefsApply()
+{
+  TryToChangeAudio();
+  SelectMIDIDevice(ERoute::kInput, mState.mMidiInDev.Get());
+  SelectMIDIDevice(ERoute::kOutput, mState.mMidiOutDev.Get());
+}
+
+void IPlugAPPHost::PrefsCommit()
+{
+  PrefsApply();
+  UpdateINI();
+}
+
+void IPlugAPPHost::PrefsRefreshDeviceLists()
+{
+  ProbeAudioIO();
+  ProbeMidiIO();
+}
+
+void IPlugAPPHost::PrefsOpenOSDeviceSettings()
+{
+#ifdef OS_WIN
+  if (PrefsCanOpenOSDeviceSettings() && mDAC && mDAC->isStreamRunning())
+    ASIOControlPanel();
+#elif defined OS_MAC
+  if (SWELL_GetOSXVersion() >= 0x1200)
+    system("open \"/System/Applications/Utilities/Audio MIDI Setup.app\"");
+  else
+    system("open \"/Applications/Utilities/Audio MIDI Setup.app\"");
+#endif
+}
+
+bool IPlugAPPHost::PrefsCanOpenOSDeviceSettings() const
+{
+#ifdef OS_WIN
+  return mState.mAudioDriverType == static_cast<uint32_t>(kDeviceASIO);
+#elif defined OS_MAC
+  return true;
+#else
+  return false;
+#endif
+}
+
+void IPlugAPPHost::PrefsSetAudioDriverType(int type)
+{
+  if (type < 0 || static_cast<uint32_t>(type) == mState.mAudioDriverType)
+    return;
+
+  mState.mAudioDriverType = static_cast<uint32_t>(type);
+  TryToChangeAudioDriverType();
+  ProbeAudioIO();
+
+  if (!mAudioOutputDevIDs.empty())
+    mState.mAudioOutDev.Set(GetAudioDeviceName(mAudioOutputDevIDs[0]).c_str());
+  if (!mAudioInputDevIDs.empty())
+    mState.mAudioInDev.Set(GetAudioDeviceName(mAudioInputDevIDs[0]).c_str());
+
+  mState.mAudioOutChanL = 1;
+  mState.mAudioOutChanR = 2;
+  mState.mAudioInChanL = 1;
+  mState.mAudioInChanR = 2;
+}
+
+void IPlugAPPHost::PrefsSetBufferSize(int frames)
+{
+  if (frames > 0)
+    mState.mBufferSize = static_cast<uint32_t>(frames);
+}
+
+void IPlugAPPHost::PrefsSetSampleRate(uint32_t sr)
+{
+  if (sr > 0)
+    mState.mAudioSR = sr;
+}
+
+std::string IPlugAPPHost::PrefsGetAudioOutputDeviceName(int index) const
+{
+  if (index < 0 || index >= static_cast<int>(mAudioOutputDevIDs.size()))
+    return {};
+  return GetAudioDeviceName(mAudioOutputDevIDs[static_cast<size_t>(index)]);
+}
+
+int IPlugAPPHost::PrefsGetSelectedAudioOutputDeviceIndex() const
+{
+  const auto id = GetAudioDeviceID(mState.mAudioOutDev.Get());
+  if (!id)
+    return -1;
+  for (int i = 0; i < static_cast<int>(mAudioOutputDevIDs.size()); ++i)
+  {
+    if (mAudioOutputDevIDs[static_cast<size_t>(i)] == id.value())
+      return i;
+  }
+  return -1;
+}
+
+void IPlugAPPHost::PrefsSetAudioOutputDeviceByIndex(int index)
+{
+  if (index < 0 || index >= static_cast<int>(mAudioOutputDevIDs.size()))
+    return;
+
+  mState.mAudioOutDev.Set(GetAudioDeviceName(mAudioOutputDevIDs[static_cast<size_t>(index)]).c_str());
+  if (mState.mAudioDriverType == static_cast<uint32_t>(kDeviceASIO))
+    mState.mAudioInDev.Set(mState.mAudioOutDev.Get());
+
+  mState.mAudioOutChanL = 1;
+  mState.mAudioOutChanR = 2;
+}
+
+int IPlugAPPHost::PrefsGetAudioOutputChannelCount() const
+{
+  if (!mDAC)
+    return 0;
+  const auto id = GetAudioDeviceID(mState.mAudioOutDev.Get());
+  if (!id)
+    return 0;
+  return static_cast<int>(mDAC->getDeviceInfo(id.value()).outputChannels);
+}
+
+int IPlugAPPHost::PrefsGetAudioInputChannelCount() const
+{
+  return GetSelectedAudioInputChannelCount();
+}
+
+void IPlugAPPHost::PrefsSetAudioInChanL(int ch)
+{
+  if (ch >= 1)
+    mState.mAudioInChanL = static_cast<uint32_t>(ch);
+}
+
+void IPlugAPPHost::PrefsSetAudioInChanR(int ch)
+{
+  if (ch >= 1)
+    mState.mAudioInChanR = static_cast<uint32_t>(ch);
+}
+
+void IPlugAPPHost::PrefsSetAudioOutChanL(int ch)
+{
+  if (ch >= 1)
+    mState.mAudioOutChanL = static_cast<uint32_t>(ch);
+}
+
+void IPlugAPPHost::PrefsSetAudioOutChanR(int ch)
+{
+  if (ch >= 1)
+    mState.mAudioOutChanR = static_cast<uint32_t>(ch);
+}
+
+std::vector<uint32_t> IPlugAPPHost::PrefsGetSampleRateOptions() const
+{
+  std::vector<uint32_t> matched;
+  if (!mDAC)
+    return matched;
+
+  auto inId = GetAudioDeviceID(mState.mAudioDriverType == static_cast<uint32_t>(kDeviceASIO)
+                                 ? mState.mAudioOutDev.Get()
+                                 : mState.mAudioInDev.Get());
+  auto outId = GetAudioDeviceID(mState.mAudioOutDev.Get());
+  if (!outId)
+    return matched;
+  if (!inId)
+    inId = outId;
+
+  const auto inInfo = mDAC->getDeviceInfo(inId.value());
+  const auto outInfo = mDAC->getDeviceInfo(outId.value());
+  for (uint32_t inSr : inInfo.sampleRates)
+  {
+    for (uint32_t outSr : outInfo.sampleRates)
+    {
+      if (inSr == outSr)
+        matched.push_back(inSr);
+    }
+  }
+  std::sort(matched.begin(), matched.end());
+  matched.erase(std::unique(matched.begin(), matched.end()), matched.end());
+  return matched;
+}
+
+std::string IPlugAPPHost::PrefsGetMidiInputDeviceName(int index) const
+{
+  if (index < 0 || index >= static_cast<int>(mMidiInputDevNames.size()))
+    return {};
+  return mMidiInputDevNames[static_cast<size_t>(index)];
+}
+
+std::string IPlugAPPHost::PrefsGetMidiOutputDeviceName(int index) const
+{
+  if (index < 0 || index >= static_cast<int>(mMidiOutputDevNames.size()))
+    return {};
+  return mMidiOutputDevNames[static_cast<size_t>(index)];
+}
+
+int IPlugAPPHost::PrefsGetSelectedMidiInputDeviceIndex() const
+{
+  for (int i = 0; i < static_cast<int>(mMidiInputDevNames.size()); ++i)
+  {
+    if (mMidiInputDevNames[static_cast<size_t>(i)] == mState.mMidiInDev.Get())
+      return i;
+  }
+  return -1;
+}
+
+int IPlugAPPHost::PrefsGetSelectedMidiOutputDeviceIndex() const
+{
+  for (int i = 0; i < static_cast<int>(mMidiOutputDevNames.size()); ++i)
+  {
+    if (mMidiOutputDevNames[static_cast<size_t>(i)] == mState.mMidiOutDev.Get())
+      return i;
+  }
+  return -1;
+}
+
+void IPlugAPPHost::PrefsSetMidiInputDeviceByIndex(int index)
+{
+  if (index < 0 || index >= static_cast<int>(mMidiInputDevNames.size()))
+    return;
+  mState.mMidiInDev.Set(mMidiInputDevNames[static_cast<size_t>(index)].c_str());
+}
+
+void IPlugAPPHost::PrefsSetMidiOutputDeviceByIndex(int index)
+{
+  if (index < 0 || index >= static_cast<int>(mMidiOutputDevNames.size()))
+    return;
+  mState.mMidiOutDev.Set(mMidiOutputDevNames[static_cast<size_t>(index)].c_str());
+}
+
+void IPlugAPPHost::PrefsSetMidiInChan(int chan)
+{
+  if (chan >= 0)
+    mState.mMidiInChan = static_cast<uint32_t>(chan);
+}
+
+void IPlugAPPHost::PrefsSetMidiOutChan(int chan)
+{
+  if (chan >= 0)
+    mState.mMidiOutChan = static_cast<uint32_t>(chan);
 }
 

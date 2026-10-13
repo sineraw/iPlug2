@@ -474,8 +474,18 @@ IRECT IPopupMenuControl::GetLargestCellRectForMenu(IPopupMenu& menu, float x, fl
   
   span.HPad(TEXT_HPAD); // add some padding because we don't want to be flush to the edges
   span.Pad(TICK_SIZE, 0, ARROW_SIZE, 0);
-  if (span.W() < mMinimumCellWidth)
+  if (mMatchAnchorWidth && mAnchorArea.W() > 0.f)
+  {
+    // Panel target = cells padded by PAD on each side → match anchor field width.
+    const float cellW = (mAnchorArea.W() > 2.f * PAD) ? (mAnchorArea.W() - 2.f * PAD) : 1.f;
+    span.R = span.L + cellW;
+  }
+  else if (span.W() < mMinimumCellWidth)
+  {
     span.R = span.L + mMinimumCellWidth;
+  }
+  if (span.H() < mMinimumCellHeight)
+    span.B = span.T + mMinimumCellHeight;
   
   return IRECT(x, y, x + span.W(), y + span.H());
 }

@@ -661,6 +661,10 @@ WDL_DLGRET IPlugAPPHost::MainDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPA
         }
         case ID_PREFERENCES:
         {
+          IPlugAPP* pPlug = pAppHost->GetPlug();
+          if (pPlug && pPlug->OnHostRequestingPreferences())
+            return 0;
+
           INT_PTR ret = DialogBox(gHINSTANCE, MAKEINTRESOURCE(IDD_DIALOG_PREF), hwndDlg, IPlugAPPHost::PreferencesDlgProc);
 
           if (ret == IDOK)

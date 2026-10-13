@@ -238,6 +238,53 @@ public:
   int GetAudioInputPairFirstChannel() const { return static_cast<int>(mState.mAudioInChanL); }
   bool SetAudioInputChannelPair(int firstChannel);
 
+  /** Custom in-app preferences panel (standalone). Snapshot/restore like the stock dialog. */
+  void PrefsBeginEdit();
+  void PrefsCancelEdit();
+  void PrefsApply();
+  void PrefsCommit();
+  void PrefsOpenOSDeviceSettings();
+  void PrefsRefreshDeviceLists();
+
+  int PrefsGetAudioDriverType() const { return static_cast<int>(mState.mAudioDriverType); }
+  void PrefsSetAudioDriverType(int type);
+  int PrefsGetBufferSize() const { return static_cast<int>(mState.mBufferSize); }
+  void PrefsSetBufferSize(int frames);
+  uint32_t PrefsGetSampleRate() const { return mState.mAudioSR; }
+  void PrefsSetSampleRate(uint32_t sr);
+
+  int PrefsGetAudioOutputDeviceCount() const { return static_cast<int>(mAudioOutputDevIDs.size()); }
+  std::string PrefsGetAudioOutputDeviceName(int index) const;
+  int PrefsGetSelectedAudioOutputDeviceIndex() const;
+  void PrefsSetAudioOutputDeviceByIndex(int index);
+
+  int PrefsGetAudioOutputChannelCount() const;
+  int PrefsGetAudioInputChannelCount() const;
+  int PrefsGetAudioInChanL() const { return static_cast<int>(mState.mAudioInChanL); }
+  int PrefsGetAudioInChanR() const { return static_cast<int>(mState.mAudioInChanR); }
+  int PrefsGetAudioOutChanL() const { return static_cast<int>(mState.mAudioOutChanL); }
+  int PrefsGetAudioOutChanR() const { return static_cast<int>(mState.mAudioOutChanR); }
+  void PrefsSetAudioInChanL(int ch);
+  void PrefsSetAudioInChanR(int ch);
+  void PrefsSetAudioOutChanL(int ch);
+  void PrefsSetAudioOutChanR(int ch);
+
+  std::vector<uint32_t> PrefsGetSampleRateOptions() const;
+  bool PrefsCanOpenOSDeviceSettings() const;
+
+  int PrefsGetMidiInputDeviceCount() const { return static_cast<int>(mMidiInputDevNames.size()); }
+  int PrefsGetMidiOutputDeviceCount() const { return static_cast<int>(mMidiOutputDevNames.size()); }
+  std::string PrefsGetMidiInputDeviceName(int index) const;
+  std::string PrefsGetMidiOutputDeviceName(int index) const;
+  int PrefsGetSelectedMidiInputDeviceIndex() const;
+  int PrefsGetSelectedMidiOutputDeviceIndex() const;
+  void PrefsSetMidiInputDeviceByIndex(int index);
+  void PrefsSetMidiOutputDeviceByIndex(int index);
+  int PrefsGetMidiInChan() const { return static_cast<int>(mState.mMidiInChan); }
+  int PrefsGetMidiOutChan() const { return static_cast<int>(mState.mMidiOutChan); }
+  void PrefsSetMidiInChan(int chan);
+  void PrefsSetMidiOutChan(int chan);
+
   /** Optional app-level input (e.g. WAV file). Fills one sample per channel at bufferIndex in silence buffers. */
   using CustomInputFillFunc = bool (*)(void* pUserData, double* const* perChannelBuffers, int nChans, int bufferIndex);
   void SetCustomInputFill(CustomInputFillFunc fn, void* pUserData = nullptr);
