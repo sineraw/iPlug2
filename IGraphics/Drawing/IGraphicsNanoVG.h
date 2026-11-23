@@ -124,6 +124,17 @@ public:
   
   IColor GetPoint(int x, int y) override;
   void* GetDrawContext() override { return (void*) mVG; }
+
+  /** GL only: true when a layer can be read back through a pixel-buffer instead of a blocking glReadPixels. */
+  bool SupportsAsyncReadback() const;
+  /** A previous async read is finished. Does not wait. nv12 is the buffer layout. */
+  bool PollAsyncReadback(RawBitmapData& data, int& width, int& height, bool& nv12);
+  /** A free pixel-buffer slot is available, so queueing will not stall. */
+  bool CanQueueLayerReadback() const;
+  /** Takes ownership of the layer until the matching Poll finishes the DMA.
+      nv12 converts and flips on the GPU, then reads the packed NV12 buffer. */
+  void QueueLayerReadback(ILayerPtr layer, bool nv12);
+  void ReleaseAsyncReadback();
     
   IBitmap LoadBitmap(const char* name, int nStates, bool framesAreHorizontal, int targetScale) override;
   void ReleaseBitmap(const IBitmap& bitmap) override { }; // NO-OP
@@ -170,6 +181,19 @@ private:
   NVGcontext* mVG = nullptr;
   NVGframebuffer* mMainFrameBuffer = nullptr;
   int mInitialFBO = 0;
+
+  struct AsyncReadSlot
+  {
+    unsigned pbo = 0;
+    void* fence = nullptr;
+    bool busy = false;
+    bool nv12 = false;
+    int w = 0;
+    int h = 0;
+    ILayerPtr held;
+  };
+  AsyncReadSlot mAsyncRead[2];
+  void* mNv12Pack = nullptr;
 };
 
 END_IGRAPHICS_NAMESPACE

@@ -9,6 +9,8 @@
 */
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 #include "IGraphicsNanoVG.h"
 #include "ITextEntryControl.h"
@@ -464,8 +466,526 @@ void IGraphicsNanoVG::OnViewInitialized(void* pContext)
     DBGMSG("Could not init nanovg.\n");
 }
 
+#if defined IGRAPHICS_GL && defined OS_WIN
+namespace
+{
+#ifndef GL_MAP_READ_BIT
+#define GL_MAP_READ_BIT 0x0001
+#endif
+#ifndef GL_SYNC_GPU_COMMANDS_COMPLETE
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#endif
+#ifndef GL_TIMEOUT_EXPIRED
+#define GL_TIMEOUT_EXPIRED 0x911B
+#endif
+#ifndef GL_WAIT_FAILED
+#define GL_WAIT_FAILED 0x911D
+#endif
+
+// glad_GL2 does not expose GL 3.2 sync objects. The Windows context is 3.3 core, so load them directly.
+struct GlReadbackFns
+{
+  bool tried = false;
+  bool ok = false;
+  void* (APIENTRY* mapRange)(GLenum, GLintptr, GLsizeiptr, GLbitfield) = nullptr;
+  GLsync (APIENTRY* fence)(GLenum, GLbitfield) = nullptr;
+  GLenum (APIENTRY* clientWait)(GLsync, GLbitfield, unsigned long long) = nullptr;
+  void (APIENTRY* deleteSync)(GLsync) = nullptr;
+};
+
+GlReadbackFns gReadbackFns;
+
+bool EnsureReadbackFns()
+{
+  if (gReadbackFns.tried)
+    return gReadbackFns.ok;
+  gReadbackFns.tried = true;
+  gReadbackFns.mapRange = reinterpret_cast<decltype(gReadbackFns.mapRange)>(wglGetProcAddress("glMapBufferRange"));
+  gReadbackFns.fence = reinterpret_cast<decltype(gReadbackFns.fence)>(wglGetProcAddress("glFenceSync"));
+  gReadbackFns.clientWait = reinterpret_cast<decltype(gReadbackFns.clientWait)>(wglGetProcAddress("glClientWaitSync"));
+  gReadbackFns.deleteSync = reinterpret_cast<decltype(gReadbackFns.deleteSync)>(wglGetProcAddress("glDeleteSync"));
+  gReadbackFns.ok = gReadbackFns.mapRange && gReadbackFns.fence && gReadbackFns.clientWait && gReadbackFns.deleteSync;
+  return gReadbackFns.ok;
+}
+}
+#endif
+
+#if defined IGRAPHICS_GL && defined OS_WIN
+namespace
+{
+#ifndef GL_R8
+#define GL_R8 0x8229
+#endif
+#ifndef GL_RG
+#define GL_RG 0x8227
+#endif
+#ifndef GL_RG8
+#define GL_RG8 0x822B
+#endif
+#ifndef GL_RED
+#define GL_RED 0x1903
+#endif
+
+struct Nv12Pack
+{
+  GLuint progY = 0;
+  GLuint progUv = 0;
+  GLuint vao = 0;
+  GLuint vbo = 0;
+  GLuint yTex = 0;
+  GLuint yFbo = 0;
+  GLuint uvTex = 0;
+  GLuint uvFbo = 0;
+  GLint locSizeY = -1;
+  GLint locSizeUv = -1;
+  int w = 0;
+  int h = 0;
+  bool failed = false;
+};
+
+void (APIENTRY* pGenVao)(GLsizei, GLuint*) = nullptr;
+void (APIENTRY* pBindVao)(GLuint) = nullptr;
+void (APIENTRY* pDelVao)(GLsizei, const GLuint*) = nullptr;
+
+bool EnsureVaoFns()
+{
+  if (pGenVao)
+    return true;
+  pGenVao = reinterpret_cast<decltype(pGenVao)>(wglGetProcAddress("glGenVertexArrays"));
+  pBindVao = reinterpret_cast<decltype(pBindVao)>(wglGetProcAddress("glBindVertexArray"));
+  pDelVao = reinterpret_cast<decltype(pDelVao)>(wglGetProcAddress("glDeleteVertexArrays"));
+  return pGenVao && pBindVao && pDelVao;
+}
+
+GLuint CompileShader(GLenum type, const char* src)
+{
+  const GLuint shader = glCreateShader(type);
+  glShaderSource(shader, 1, &src, nullptr);
+  glCompileShader(shader);
+  GLint ok = 0;
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+  if (!ok)
+  {
+    glDeleteShader(shader);
+    return 0;
+  }
+  return shader;
+}
+
+GLuint LinkProgram(const char* fragSrc)
+{
+  static const char* kVert = R"(#version 330 core
+layout(location = 0) in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+)";
+  const GLuint vs = CompileShader(GL_VERTEX_SHADER, kVert);
+  const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fragSrc);
+  if (!vs || !fs)
+  {
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return 0;
+  }
+  const GLuint prog = glCreateProgram();
+  glAttachShader(prog, vs);
+  glAttachShader(prog, fs);
+  glLinkProgram(prog);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+  GLint ok = 0;
+  glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+  if (!ok)
+  {
+    glDeleteProgram(prog);
+    return 0;
+  }
+  return prog;
+}
+
+void DestroyNv12Pack(Nv12Pack* pack)
+{
+  if (!pack)
+    return;
+  if (pack->yFbo) { GLuint id = pack->yFbo; glDeleteFramebuffers(1, &id); }
+  if (pack->uvFbo) { GLuint id = pack->uvFbo; glDeleteFramebuffers(1, &id); }
+  if (pack->yTex) { GLuint id = pack->yTex; glDeleteTextures(1, &id); }
+  if (pack->uvTex) { GLuint id = pack->uvTex; glDeleteTextures(1, &id); }
+  if (pack->progY) glDeleteProgram(pack->progY);
+  if (pack->progUv) glDeleteProgram(pack->progUv);
+  if (pack->vbo) { GLuint id = pack->vbo; glDeleteBuffers(1, &id); }
+  if (pack->vao && pDelVao) pDelVao(1, &pack->vao);
+  delete pack;
+}
+
+GLuint MakeTex(GLenum internalFmt, GLenum fmt, int w, int h)
+{
+  GLuint tex = 0;
+  glGenTextures(1, &tex);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, nullptr);
+  return tex;
+}
+
+GLuint MakeFbo(GLuint tex)
+{
+  GLuint fbo = 0;
+  glGenFramebuffers(1, &fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+  return fbo;
+}
+
+Nv12Pack* EnsureNv12Pack(Nv12Pack* existing, int w, int h)
+{
+  if (existing && existing->failed)
+    return existing;
+  if (!EnsureVaoFns() || (w % 2) || (h % 2))
+    return existing;
+
+  Nv12Pack* pack = existing ? existing : new Nv12Pack();
+  if (!pack->progY)
+  {
+    static const char* kY = R"(#version 330 core
+uniform sampler2D uSrc;
+uniform ivec2 uSize;
+out vec4 o;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  ivec2 s = ivec2(p.x, uSize.y - 1 - p.y);
+  vec3 rgb = texelFetch(uSrc, s, 0).rgb;
+  float y = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+  o = vec4(y, 0.0, 0.0, 1.0);
+}
+)";
+    static const char* kUv = R"(#version 330 core
+uniform sampler2D uSrc;
+uniform ivec2 uSize;
+out vec4 o;
+void main() {
+  ivec2 d = ivec2(gl_FragCoord.xy);
+  int x0 = d.x * 2;
+  int yTop = d.y * 2;
+  int y0 = uSize.y - 1 - yTop;
+  int y1 = y0 - 1;
+  int x1 = min(x0 + 1, uSize.x - 1);
+  y1 = max(y1, 0);
+  vec3 a = texelFetch(uSrc, ivec2(x0, y0), 0).rgb;
+  vec3 b = texelFetch(uSrc, ivec2(x1, y0), 0).rgb;
+  vec3 c = texelFetch(uSrc, ivec2(x0, y1), 0).rgb;
+  vec3 dlt = texelFetch(uSrc, ivec2(x1, y1), 0).rgb;
+  vec3 rgb = (a + b + c + dlt) * 0.25;
+  float u = dot(rgb, vec3(-0.114572, -0.385428, 0.5)) + 0.5;
+  float v = dot(rgb, vec3(0.5, -0.454153, -0.045847)) + 0.5;
+  o = vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), 0.0, 1.0);
+}
+)";
+    pack->progY = LinkProgram(kY);
+    pack->progUv = LinkProgram(kUv);
+    if (!pack->progY || !pack->progUv)
+    {
+      pack->failed = true;
+      return pack;
+    }
+    glUseProgram(pack->progY);
+    glUniform1i(glGetUniformLocation(pack->progY, "uSrc"), 0);
+    pack->locSizeY = glGetUniformLocation(pack->progY, "uSize");
+    glUseProgram(pack->progUv);
+    glUniform1i(glGetUniformLocation(pack->progUv, "uSrc"), 0);
+    pack->locSizeUv = glGetUniformLocation(pack->progUv, "uSize");
+    glUseProgram(0);
+
+    const float tri[] = { -1.f, -1.f, 3.f, -1.f, -1.f, 3.f };
+    pGenVao(1, &pack->vao);
+    glGenBuffers(1, &pack->vbo);
+    pBindVao(pack->vao);
+    glBindBuffer(GL_ARRAY_BUFFER, pack->vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    pBindVao(0);
+  }
+
+  if (pack->w != w || pack->h != h)
+  {
+    if (pack->yFbo) { GLuint id = pack->yFbo; glDeleteFramebuffers(1, &id); pack->yFbo = 0; }
+    if (pack->uvFbo) { GLuint id = pack->uvFbo; glDeleteFramebuffers(1, &id); pack->uvFbo = 0; }
+    if (pack->yTex) { GLuint id = pack->yTex; glDeleteTextures(1, &id); pack->yTex = 0; }
+    if (pack->uvTex) { GLuint id = pack->uvTex; glDeleteTextures(1, &id); pack->uvTex = 0; }
+    pack->yTex = MakeTex(GL_R8, GL_RED, w, h);
+    pack->uvTex = MakeTex(GL_RG8, GL_RG, w / 2, h / 2);
+    pack->yFbo = MakeFbo(pack->yTex);
+    pack->uvFbo = MakeFbo(pack->uvTex);
+    pack->w = w;
+    pack->h = h;
+  }
+  return pack;
+}
+
+void DrawNv12(Nv12Pack* pack, GLuint srcTex, int w, int h)
+{
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, srcTex);
+  pBindVao(pack->vao);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, pack->yFbo);
+  glViewport(0, 0, w, h);
+  glUseProgram(pack->progY);
+  if (pack->locSizeY >= 0)
+    glUniform2i(pack->locSizeY, w, h);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, pack->uvFbo);
+  glViewport(0, 0, w / 2, h / 2);
+  glUseProgram(pack->progUv);
+  if (pack->locSizeUv >= 0)
+    glUniform2i(pack->locSizeUv, w, h);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+}
+#endif
+
+void IGraphicsNanoVG::ReleaseAsyncReadback()
+{
+#if defined IGRAPHICS_GL && defined OS_WIN
+  for (auto& slot : mAsyncRead)
+  {
+    if (slot.fence && gReadbackFns.deleteSync)
+    {
+      gReadbackFns.deleteSync(static_cast<GLsync>(slot.fence));
+      slot.fence = nullptr;
+    }
+    if (slot.pbo)
+    {
+      GLuint id = slot.pbo;
+      glDeleteBuffers(1, &id);
+      slot.pbo = 0;
+    }
+    slot.busy = false;
+    slot.nv12 = false;
+    slot.w = 0;
+    slot.h = 0;
+    slot.held = nullptr;
+  }
+  DestroyNv12Pack(static_cast<Nv12Pack*>(mNv12Pack));
+  mNv12Pack = nullptr;
+#endif
+}
+
+bool IGraphicsNanoVG::SupportsAsyncReadback() const
+{
+#if defined IGRAPHICS_GL && defined OS_WIN
+  return EnsureReadbackFns();
+#else
+  return false;
+#endif
+}
+
+bool IGraphicsNanoVG::CanQueueLayerReadback() const
+{
+#if defined IGRAPHICS_GL && defined OS_WIN
+  if (!gReadbackFns.ok)
+    return false;
+  for (const auto& slot : mAsyncRead)
+  {
+    if (!slot.busy)
+      return true;
+  }
+#endif
+  return false;
+}
+
+bool IGraphicsNanoVG::PollAsyncReadback(RawBitmapData& data, int& width, int& height, bool& nv12)
+{
+  nv12 = false;
+#if defined IGRAPHICS_GL && defined OS_WIN
+  if (!gReadbackFns.ok)
+    return false;
+
+  for (auto& slot : mAsyncRead)
+  {
+    if (!slot.busy || !slot.fence)
+      continue;
+
+    const GLenum state = gReadbackFns.clientWait(static_cast<GLsync>(slot.fence), 0, 0);
+    if (state == GL_TIMEOUT_EXPIRED || state == GL_WAIT_FAILED)
+      continue;
+
+    const int bytes = slot.nv12 ? (slot.w * slot.h * 3 / 2) : (slot.w * slot.h * 4);
+    bool ok = false;
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
+    if (void* ptr = gReadbackFns.mapRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT))
+    {
+      data.Resize(bytes);
+      if (data.GetSize() >= bytes)
+      {
+        std::memcpy(data.Get(), ptr, static_cast<size_t>(bytes));
+        width = slot.w;
+        height = slot.h;
+        nv12 = slot.nv12;
+        ok = true;
+      }
+      glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+    gReadbackFns.deleteSync(static_cast<GLsync>(slot.fence));
+    slot.fence = nullptr;
+    slot.busy = false;
+    slot.nv12 = false;
+    slot.held = nullptr;
+    if (ok)
+      return true;
+  }
+#else
+  (void) data;
+  (void) width;
+  (void) height;
+#endif
+  return false;
+}
+
+void IGraphicsNanoVG::QueueLayerReadback(ILayerPtr layer, bool nv12)
+{
+#if defined IGRAPHICS_GL && defined OS_WIN
+  if (!EnsureReadbackFns())
+    return;
+
+  const APIBitmap* bmp = layer ? layer->GetAPIBitmap() : nullptr;
+  auto* bitmap = dynamic_cast<const Bitmap*>(bmp);
+  NVGframebuffer* fb = bitmap ? bitmap->GetFBO() : nullptr;
+  if (!bmp || !fb || fb->texture == 0)
+    return;
+
+  const int w = bmp->GetWidth();
+  const int h = bmp->GetHeight();
+  if (w < 2 || h < 2)
+    return;
+
+  AsyncReadSlot* slot = nullptr;
+  for (auto& candidate : mAsyncRead)
+  {
+    if (!candidate.busy)
+    {
+      slot = &candidate;
+      break;
+    }
+  }
+  if (!slot)
+    return;
+
+  // Snapshot NanoVG's GL state first. Creating the NV12 targets binds a framebuffer;
+  // saving that afterwards made the rest of the frame draw into it and crashed the host.
+  GLint prevFbo = 0;
+  GLint prevRbo = 0;
+  GLint prevVp[4] = {};
+  GLint prevProgram = 0;
+  GLint prevVao = 0;
+  GLint prevArray = 0;
+  GLint prevPack = 0;
+  GLint prevTex = 0;
+  GLint prevActiveTex = 0;
+  GLint prevAlign = 4;
+  GLint prevRowLength = 0;
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+  glGetIntegerv(GL_RENDERBUFFER_BINDING, &prevRbo);
+  glGetIntegerv(GL_VIEWPORT, prevVp);
+  glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+  glGetIntegerv(0x85B5, &prevVao); // GL_VERTEX_ARRAY_BINDING
+  glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevArray);
+  glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPack);
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
+  glGetIntegerv(GL_PACK_ALIGNMENT, &prevAlign);
+  glGetIntegerv(0x0D02, &prevRowLength); // GL_PACK_ROW_LENGTH
+  const GLboolean blend = glIsEnabled(GL_BLEND);
+  const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+  const GLboolean depth = glIsEnabled(GL_DEPTH_TEST);
+  const GLboolean stencil = glIsEnabled(GL_STENCIL_TEST);
+
+  bool packedNv12 = false;
+  if (nv12 && (w % 2) == 0 && (h % 2) == 0)
+  {
+    mNv12Pack = EnsureNv12Pack(static_cast<Nv12Pack*>(mNv12Pack), w, h);
+    auto* pack = static_cast<Nv12Pack*>(mNv12Pack);
+    packedNv12 = pack && !pack->failed && pack->yFbo && pack->uvFbo;
+  }
+
+  const int bytes = packedNv12 ? (w * h * 3 / 2) : (w * h * 4);
+  if (!slot->pbo)
+  {
+    GLuint id = 0;
+    glGenBuffers(1, &id);
+    slot->pbo = id;
+  }
+
+  glDisable(GL_BLEND);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glPixelStorei(0x0D02, 0);
+
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, slot->pbo);
+  if (slot->w != w || slot->h != h || slot->nv12 != packedNv12)
+  {
+    glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
+    slot->w = w;
+    slot->h = h;
+  }
+
+  if (packedNv12)
+  {
+    DrawNv12(static_cast<Nv12Pack*>(mNv12Pack), fb->texture, w, h);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot->pbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<Nv12Pack*>(mNv12Pack)->yFbo);
+    glReadPixels(0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<Nv12Pack*>(mNv12Pack)->uvFbo);
+    glReadPixels(0, 0, w / 2, h / 2, GL_RG, GL_UNSIGNED_BYTE, reinterpret_cast<void*>(static_cast<std::uintptr_t>(w * h)));
+  }
+  else
+  {
+    glBindFramebuffer(GL_FRAMEBUFFER, fb->fbo);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  }
+
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(prevPack));
+  glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+  glBindRenderbuffer(GL_RENDERBUFFER, static_cast<GLuint>(prevRbo));
+  glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
+  glUseProgram(static_cast<GLuint>(prevProgram));
+  if (pBindVao)
+    pBindVao(static_cast<GLuint>(prevVao));
+  glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(prevArray));
+  glActiveTexture(static_cast<GLenum>(prevActiveTex));
+  glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTex));
+  glPixelStorei(GL_PACK_ALIGNMENT, prevAlign);
+  glPixelStorei(0x0D02, prevRowLength);
+  if (blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+  if (scissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+  if (depth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+  if (stencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+
+  if (slot->fence)
+    gReadbackFns.deleteSync(static_cast<GLsync>(slot->fence));
+  slot->fence = gReadbackFns.fence(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+  glFlush();
+  slot->busy = true;
+  slot->nv12 = packedNv12;
+  slot->held = std::move(layer);
+#else
+  (void) layer;
+  (void) nv12;
+#endif
+}
+
 void IGraphicsNanoVG::OnViewDestroyed()
 {
+  ReleaseAsyncReadback();
+
   // need to remove all the controls to free framebuffers, before deleting context
   RemoveAllControls();
 
