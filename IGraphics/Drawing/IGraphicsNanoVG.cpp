@@ -8,6 +8,7 @@
  ==============================================================================
 */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -63,9 +64,10 @@
   #include "nanovg_gl_utils.h"
 #elif defined IGRAPHICS_METAL
   #include "nanovg_mtl.h"
-  #if defined OS_MAC
+  #if defined OS_MAC || defined OS_IOS
     //even though this is a .cpp we are in an objc(pp) compilation unit
     #import <Metal/Metal.h>
+    #import <CoreFoundation/CoreFoundation.h>
   #endif
 #else
   #error you must define either IGRAPHICS_GL2, IGRAPHICS_GLES2 etc or IGRAPHICS_METAL when using IGRAPHICS_NANOVG
@@ -772,6 +774,26 @@ void IGraphicsNanoVG::ReleaseAsyncReadback()
   }
   DestroyNv12Pack(static_cast<Nv12Pack*>(mNv12Pack));
   mNv12Pack = nullptr;
+#elif defined IGRAPHICS_METAL && (defined OS_MAC || defined OS_IOS)
+  for (auto& slot : mAsyncRead)
+  {
+    if (slot.fence)
+    {
+      CFRelease(slot.fence);
+      slot.fence = nullptr;
+    }
+    if (slot.gpuBuf)
+    {
+      CFRelease(slot.gpuBuf);
+      slot.gpuBuf = nullptr;
+    }
+    slot.rowBytes = 0;
+    slot.busy = false;
+    slot.nv12 = false;
+    slot.w = 0;
+    slot.h = 0;
+    slot.held = nullptr;
+  }
 #endif
 }
 
@@ -779,6 +801,8 @@ bool IGraphicsNanoVG::SupportsAsyncReadback() const
 {
 #if defined IGRAPHICS_GL && defined OS_WIN
   return EnsureReadbackFns();
+#elif defined IGRAPHICS_METAL && (defined OS_MAC || defined OS_IOS)
+  return mVG && mnvgCommandQueue(mVG);
 #else
   return false;
 #endif
@@ -789,12 +813,17 @@ bool IGraphicsNanoVG::CanQueueLayerReadback() const
 #if defined IGRAPHICS_GL && defined OS_WIN
   if (!gReadbackFns.ok)
     return false;
+#elif defined IGRAPHICS_METAL && (defined OS_MAC || defined OS_IOS)
+  if (!mVG)
+    return false;
+#else
+  return false;
+#endif
   for (const auto& slot : mAsyncRead)
   {
     if (!slot.busy)
       return true;
   }
-#endif
   return false;
 }
 
@@ -836,6 +865,58 @@ bool IGraphicsNanoVG::PollAsyncReadback(RawBitmapData& data, int& width, int& he
     slot.fence = nullptr;
     slot.busy = false;
     slot.nv12 = false;
+    slot.held = nullptr;
+    if (ok)
+      return true;
+  }
+#elif defined IGRAPHICS_METAL && (defined OS_MAC || defined OS_IOS)
+  for (auto& slot : mAsyncRead)
+  {
+    if (!slot.busy || !slot.fence)
+      continue;
+
+    id<MTLCommandBuffer> cmd = (__bridge id<MTLCommandBuffer>)slot.fence;
+    const MTLCommandBufferStatus status = cmd.status;
+    if (status == MTLCommandBufferStatusError)
+    {
+      CFRelease(slot.fence);
+      slot.fence = nullptr;
+      slot.busy = false;
+      slot.held = nullptr;
+      continue;
+    }
+    if (status != MTLCommandBufferStatusCompleted)
+      continue;
+
+    id<MTLBuffer> buf = slot.gpuBuf ? (__bridge id<MTLBuffer>)slot.gpuBuf : nil;
+    const int tight = slot.w * slot.h * 4;
+    const int srcRow = slot.rowBytes > 0 ? slot.rowBytes : (slot.w * 4);
+    data.Resize(tight);
+    bool ok = false;
+    if (data.GetSize() >= tight && buf && buf.contents)
+    {
+      const uint8_t* src = static_cast<const uint8_t*>(buf.contents);
+      uint8_t* dst = data.Get();
+      if (srcRow == slot.w * 4)
+      {
+        std::memcpy(dst, src, static_cast<size_t>(tight));
+      }
+      else
+      {
+        for (int y = 0; y < slot.h; ++y)
+          std::memcpy(dst + static_cast<size_t>(y) * slot.w * 4,
+                      src + static_cast<size_t>(y) * srcRow,
+                      static_cast<size_t>(slot.w) * 4u);
+      }
+      width = slot.w;
+      height = slot.h;
+      nv12 = false;
+      ok = true;
+    }
+
+    CFRelease(slot.fence);
+    slot.fence = nullptr;
+    slot.busy = false;
     slot.held = nullptr;
     if (ok)
       return true;
@@ -975,6 +1056,90 @@ void IGraphicsNanoVG::QueueLayerReadback(ILayerPtr layer, bool nv12)
   glFlush();
   slot->busy = true;
   slot->nv12 = packedNv12;
+  slot->held = std::move(layer);
+#elif defined IGRAPHICS_METAL && (defined OS_MAC || defined OS_IOS)
+  (void) nv12; // Packed NV12 is the Windows GL path; Metal copies RGBA asynchronously.
+
+  const APIBitmap* bmp = layer ? layer->GetAPIBitmap() : nullptr;
+  auto* bitmap = dynamic_cast<const Bitmap*>(bmp);
+  NVGframebuffer* fb = bitmap ? bitmap->GetFBO() : nullptr;
+  if (!mVG || !bmp || !fb)
+    return;
+
+  id<MTLTexture> tex = (__bridge id<MTLTexture>)mnvgImageHandleNoWait(mVG, fb->image);
+  id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)mnvgCommandQueue(mVG);
+  if (!tex || !queue)
+    return;
+
+  const int w = bmp->GetWidth();
+  const int h = bmp->GetHeight();
+  if (w < 2 || h < 2)
+    return;
+
+  AsyncReadSlot* slot = nullptr;
+  for (auto& candidate : mAsyncRead)
+  {
+    if (!candidate.busy)
+    {
+      slot = &candidate;
+      break;
+    }
+  }
+  if (!slot)
+    return;
+
+  const int srcW = std::min(w, static_cast<int>(tex.width));
+  const int srcH = std::min(h, static_cast<int>(tex.height));
+  const int rowBytes = static_cast<int>(((static_cast<size_t>(srcW) * 4u + 255u) / 256u) * 256u);
+  const size_t bytes = static_cast<size_t>(rowBytes) * static_cast<size_t>(srcH);
+
+  id<MTLBuffer> buf = slot->gpuBuf ? (__bridge id<MTLBuffer>)slot->gpuBuf : nil;
+  if (!buf || buf.length < bytes)
+  {
+    if (slot->gpuBuf)
+    {
+      CFRelease(slot->gpuBuf);
+      slot->gpuBuf = nullptr;
+    }
+    id<MTLDevice> device = tex.device ? tex.device : (__bridge id<MTLDevice>)mnvgDevice(mVG);
+    if (!device)
+      return;
+    buf = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    if (!buf)
+      return;
+    slot->gpuBuf = (void*)CFBridgingRetain(buf);
+  }
+
+  if (slot->fence)
+  {
+    CFRelease(slot->fence);
+    slot->fence = nullptr;
+  }
+
+  id<MTLCommandBuffer> cmd = [queue commandBuffer];
+  if (!cmd)
+    return;
+  id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+  if (!blit)
+    return;
+  [blit copyFromTexture:tex
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(srcW, srcH, 1)
+               toBuffer:(__bridge id<MTLBuffer>)slot->gpuBuf
+      destinationOffset:0
+ destinationBytesPerRow:static_cast<NSUInteger>(rowBytes)
+destinationBytesPerImage:bytes];
+  [blit endEncoding];
+  [cmd commit];
+
+  slot->fence = (void*)CFBridgingRetain(cmd);
+  slot->rowBytes = rowBytes;
+  slot->w = srcW;
+  slot->h = srcH;
+  slot->nv12 = false;
+  slot->busy = true;
   slot->held = std::move(layer);
 #else
   (void) layer;

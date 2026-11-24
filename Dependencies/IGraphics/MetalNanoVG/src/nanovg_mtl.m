@@ -556,6 +556,13 @@ void* mnvgDevice(NVGcontext* ctx) {
   return (__bridge void*)mtl.metalLayer.device;
 }
 
+void* mnvgImageHandleNoWait(NVGcontext* ctx, int image) {
+  MNVGcontext* mtl = (__bridge MNVGcontext*)nvgInternalParams(ctx)->userPtr;
+  MNVGtexture* tex = [mtl findTexture:image];
+  if (tex == nil) return NULL;
+  return (__bridge void*)tex->tex;
+}
+
 void* mnvgImageHandle(NVGcontext* ctx, int image) {
   MNVGcontext* mtl = (__bridge MNVGcontext*)nvgInternalParams(ctx)->userPtr;
   MNVGtexture* tex = [mtl findTexture:image];

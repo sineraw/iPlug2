@@ -125,7 +125,7 @@ public:
   IColor GetPoint(int x, int y) override;
   void* GetDrawContext() override { return (void*) mVG; }
 
-  /** GL only: true when a layer can be read back through a pixel-buffer instead of a blocking glReadPixels. */
+  /** True when a layer can be read back without blocking the UI (GL PBO on Windows, Metal blit on Apple). */
   bool SupportsAsyncReadback() const;
   /** A previous async read is finished. Does not wait. nv12 is the buffer layout. */
   bool PollAsyncReadback(RawBitmapData& data, int& width, int& height, bool& nv12);
@@ -186,6 +186,8 @@ private:
   {
     unsigned pbo = 0;
     void* fence = nullptr;
+    void* gpuBuf = nullptr; // id<MTLBuffer> on Metal
+    int rowBytes = 0;
     bool busy = false;
     bool nv12 = false;
     int w = 0;
